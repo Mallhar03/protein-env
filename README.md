@@ -1,3 +1,12 @@
+---
+title: ProteinEnv
+emoji: 🧬
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # ProteinEnv 🧬
 
 > **Meta PyTorch + Hugging Face OpenEnv Hackathon Submission**
