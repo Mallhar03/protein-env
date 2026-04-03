@@ -8,7 +8,6 @@ version = "0.1.0"
 requires-python = ">=3.11"
 description = "OpenEnv environment for protein function prediction using ESM2"
 dependencies = [
-    "openenv-core>=0.2.1",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "websockets>=12.0",
@@ -30,8 +29,19 @@ dev = [
     "httpx>=0.27.0",
     "pre-commit>=3.7.0",
 ]
+# openenv-core is not yet on PyPI; install manually from source if needed
+openenv = [
+    "openenv-core>=0.2.1",
+]
+
+[tool.hatch.build.targets.wheel]
+only-include = ["constants.py", "models.py", "core", "graders", "server", "tasks"]
+
+[tool.hatch.build.targets.sdist]
+include = ["constants.py", "models.py", "core/", "graders/", "server/", "tasks/", "tests/", "data/", "pyproject.toml", "README.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--cov=. --cov-report=term-missing --cov-fail-under=80"
+
