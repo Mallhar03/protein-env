@@ -18,6 +18,24 @@ The environment provides 3 tiered difficulties for evaluating agent performance:
 
 Agents are given a raw amino acid sequence and must learn to use the `get_esm2_embedding` tool iteratively to gather representations of the sequence to inform their final submission.
 
+## 📡 OpenEnv Interface
+
+### Observation Space
+The `ProteinObservation` includes:
+- **`protein_id`**: UniProt accession.
+- **`sequence`**: Amino-acid sequence.
+- **`variant_info`**: Missense variant details (wildtype, mutant, position) for hard-tier tasks.
+- **`task_description`**: tier-specific natural language instructions.
+- **`available_tools`**: `["get_esm2_embedding"]`.
+
+### Action Space
+Agents interact via `ProteinAction`:
+- **`CALL_TOOL`**: Invoke `get_esm2_embedding` with a sequence.
+- **`SUBMIT_PREDICTION`**: Submit final values:
+  - `predicted_family` (Easy)
+  - `predicted_go_terms` (Medium)
+  - `predicted_pathogenicity` & `predicted_diseases` (Hard)
+
 ## 🛠 Project Structure
 
 *   **/core:** ESM2 embedding client, state manager, and reward calculators.
@@ -79,8 +97,13 @@ python3 inference.py
 We strictly adhere to zero side-effect design patterns with 80%+ coverage metrics.
 ```bash
 python3 -m pytest tests/unit/ -v --tb=short
-python3 -m pytest tests/integration/ test_server.py
+python3 -m pytest -v tests/unit/ --cov=. --cov-report=term-missing
 ```
+
+## ☁️ Deployment
+
+**Hugging Face Space:** [https://huggingface.co/spaces/Mallhar03/protein-env](https://huggingface.co/spaces/Mallhar03/protein-env)
+> The environment is live and OpenEnv-validated at this endpoint.
 
 ## 📖 License & Acknowledgements 
 *   **Model:** Powered by [Meta ESM2](https://github.com/facebookresearch/esm) (`facebook/esm2_t6_8M_UR50D`).
