@@ -23,7 +23,8 @@ RUN uv pip install --system --no-cache \
         python-dotenv \
         pyyaml \
         openai \
-        httpx
+        httpx \
+        "openenv-core>=0.2.0"
 
 # Copy the full project
 COPY . .
