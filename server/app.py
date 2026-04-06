@@ -30,6 +30,17 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+import os
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+
+class ResetRequest(BaseModel):
+    task_type: str = "easy"
+    seed: Optional[int] = None
+    episode_id: Optional[str] = None
+
+
 try:
     from openenv_core.server import create_app
     app = create_app(
@@ -38,20 +49,12 @@ try:
         ProteinObservation,
         env_name="protein-env",
     )
-    _env = ProteinEnvironment()
 except ImportError:
     # openenv_core not on PyPI yet — use a plain FastAPI app.
     app = FastAPI(title="protein-env", version="0.1.0")
-    _env = ProteinEnvironment()
 
-class ResetRequest(BaseModel):
-    task_type: str = "easy"
-    seed: Optional[int] = None
-    episode_id: Optional[str] = None
-
-import os
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+# Single shared environment instance — created exactly once after app is ready
+_env = ProteinEnvironment()
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_dir):

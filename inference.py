@@ -34,9 +34,10 @@ from models import ProteinAction
 
 load_dotenv()
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct")
-HF_TOKEN     = os.getenv("HF_TOKEN")
+API_BASE_URL  = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME    = os.getenv("MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct")
+HF_TOKEN      = os.getenv("HF_TOKEN")
+ENV_BASE_URL  = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 
 BENCHMARK        = "protein-env"
 MAX_STEPS        = 10
@@ -185,11 +186,23 @@ def main() -> None:
         sys.exit(1)
 
     if ProteinEnvClient is None:
-        print("ERROR: client.py not found. The OpenEnv orchestrator must inject it.", file=sys.stderr, flush=True)
+        print("ERROR: client.py not found — cannot connect to ProteinEnv server.", file=sys.stderr, flush=True)
         sys.exit(1)
 
     openai_client = openai.OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-    env           = ProteinEnvClient(base_url="http://localhost:8000")
+    env           = ProteinEnvClient(base_url=ENV_BASE_URL)
+
+    # ── Health check: fail fast if server is unreachable ─────────────────
+    try:
+        import httpx
+        r = httpx.get(f"{ENV_BASE_URL}/health", timeout=10)
+        if r.status_code != 200:
+            print(f"ERROR: Server health check failed (HTTP {r.status_code}). Is the server running at {ENV_BASE_URL}?", file=sys.stderr, flush=True)
+            sys.exit(1)
+        print(f"[DEBUG] Server healthy at {ENV_BASE_URL}", flush=True)
+    except Exception as e:
+        print(f"ERROR: Cannot reach server at {ENV_BASE_URL}: {e}", file=sys.stderr, flush=True)
+        sys.exit(1)
 
     tasks  = ["easy", "medium", "hard"]
     scores = {}
