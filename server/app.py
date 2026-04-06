@@ -55,6 +55,13 @@ except ImportError:
 _env = ProteinEnvironment()
 
 
+from fastapi.responses import RedirectResponse
+
+
+@app.get("/")
+async def root():
+    """Redirect root to the interactive API docs."""
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health")
