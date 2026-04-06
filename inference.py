@@ -2,63 +2,84 @@
 inference.py — ProteinEnv baseline inference script.
 
 Hackathon requirement: must be at project root, named exactly inference.py.
-Reads credentials from environment variables:
-  API_BASE_URL  — LLM API base URL (OpenAI-compatible)
-  MODEL_NAME    — Model identifier String
-  HF_TOKEN      — Hugging Face token (for ESM2 model download)
 
-Uses OpenAI client for ALL LLM calls (no direct HF calls from this script).
-Connects to the running ProteinEnv server at localhost:8000.
-Must complete all 3 tasks in < 20 minutes on 2vCPU / 8GB RAM.
-Emits structured [START] / [STEP] / [END] logs for the evaluator.
+Environment variables:
+  API_BASE_URL  — LLM API base URL (OpenAI-compatible)
+  MODEL_NAME    — Model identifier string
+  HF_TOKEN      — Hugging Face / API key
+
+STDOUT FORMAT (mandatory):
+  [START] task=<name> env=<benchmark> model=<model>
+  [STEP]  step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
+  [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...>
 """
 
 import os
 import sys
 import json
 import signal
-import logging
+from typing import List, Optional
 
 import openai
 from dotenv import load_dotenv
 
-# Allow running from project root without package install
 sys.path.insert(0, os.path.dirname(__file__))
 
 try:
     from client import ProteinEnvClient
 except ImportError:
-    # client.py is injected by the OpenEnv orchestrator at eval time
     ProteinEnvClient = None  # type: ignore
 
 from models import ProteinAction
 
 load_dotenv()
 
-API_BASE_URL = os.environ.get("API_BASE_URL")
-MODEL_NAME   = os.environ.get("MODEL_NAME")
-HF_TOKEN     = os.environ.get("HF_TOKEN")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct")
+HF_TOKEN     = os.getenv("HF_TOKEN")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",  # raw — evaluator parses stdout directly
-    stream=sys.stdout,
-)
-log = logging.getLogger(__name__)
+BENCHMARK        = "protein-env"
+MAX_STEPS        = 10
+SUCCESS_THRESHOLD = 0.5   # mean score >= 0.5 considered success
 
-SYSTEM_PROMPT = """You are a protein biology expert AI agent. You will be given a protein sequence
+# ── Structured log helpers (evaluator parses stdout) ─────────────────────────
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val  = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+# ── System prompts ────────────────────────────────────────────────────────────
+
+BASE_SYSTEM_PROMPT = """You are a protein biology expert AI agent. You will be given a protein sequence
 and a task. You have access to one tool: get_esm2_embedding, which returns a
 320-dimensional embedding vector for any amino acid sequence.
 
 For each task, respond with a JSON object in exactly this format:
 {
   "action_type": "submit_prediction" | "call_tool",
-  "tool_name": "get_esm2_embedding",        (only if action_type is call_tool)
+  "tool_name": "get_esm2_embedding",         (only if action_type is call_tool)
   "tool_args": {"sequence": "<AA sequence>"}, (only if action_type is call_tool)
-  "predicted_family": "<family name>",       (only for easy task)
-  "predicted_go_terms": ["GO:XXXXXXX", ...], (only for medium task)
-  "predicted_pathogenicity": "<value>",      (only for hard task)
-  "predicted_diseases": ["<disease>", ...],  (only for hard task)
+  "predicted_family": "<family name>",        (only for easy task)
+  "predicted_go_terms": ["GO:XXXXXXX", ...],  (only for medium task)
+  "predicted_pathogenicity": "<value>",       (only for hard task)
+  "predicted_diseases": ["<disease>", ...],   (only for hard task)
   "reasoning": "<your reasoning>"
 }
 
@@ -72,51 +93,47 @@ GO_HINT = (
     "Common cellular component terms: GO:0005634, GO:0005737, GO:0005829"
 )
 
-MAX_STEPS_PER_EPISODE = 10
 
+# ── Timeout (Linux/macOS only) ────────────────────────────────────────────────
 
-def timeout_handler(signum, frame):  # noqa: ANN001
-    log.error("Maximum execution time exceeded. Terminating.")
+def _timeout_handler(signum, frame):  # noqa: ANN001
+    print("[END] success=false steps=0 score=0.000 rewards=", flush=True)
     sys.exit(1)
 
+if hasattr(signal, "SIGALRM"):
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(18 * 60)
 
-def main() -> None:
-    # ── SIGALRM timeout (Linux / macOS only) ──────────────────────────────
-    if hasattr(signal, "SIGALRM"):
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(18 * 60)  # 18-minute hard cap, well under 20-min limit
 
-    # ── Validate env vars ─────────────────────────────────────────────────
-    for var, val in [("API_BASE_URL", API_BASE_URL), ("MODEL_NAME", MODEL_NAME), ("HF_TOKEN", HF_TOKEN)]:
-        if not val:
-            log.error("Missing required environment variable: %s", var)
-            sys.exit(1)
+# ── Main ──────────────────────────────────────────────────────────────────────
 
-    if ProteinEnvClient is None:
-        log.error("client.py not found — the OpenEnv orchestrator must inject it.")
-        sys.exit(1)
+def run_task(
+    openai_client: openai.OpenAI,
+    env,
+    task: str,
+) -> float:
+    """Run one episode for *task* and return the final scalar reward."""
 
-    openai_client = openai.OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-    env = ProteinEnvClient(base_url="http://localhost:8000")
+    sys_prompt = BASE_SYSTEM_PROMPT
+    if task == "medium":
+        sys_prompt += GO_HINT
 
-    tasks  = ["easy", "medium", "hard"]
-    scores: dict[str, float] = {}
+    log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
 
-    for task in tasks:
-        # ── [START] ───────────────────────────────────────────────────────
-        print(f"[START] task={task}", flush=True)
+    rewards: List[float] = []
+    steps_taken = 0
+    score       = 0.0
+    success     = False
 
-        obs = env.reset(task_type=task)
+    try:
+        obs      = env.reset(task_type=task)
+        messages = [{"role": "system", "content": sys_prompt}]
+        done     = False
 
-        sys_prompt = SYSTEM_PROMPT
-        if task == "medium":
-            sys_prompt += GO_HINT
+        for step in range(1, MAX_STEPS + 1):
+            if done:
+                break
 
-        messages    = [{"role": "system", "content": sys_prompt}]
-        final_reward = 0.0
-        step_num     = 0
-
-        for step_num in range(1, MAX_STEPS_PER_EPISODE + 1):
             messages.append({
                 "role":    "user",
                 "content": f"Observation: {obs.model_dump_json()}",
@@ -128,48 +145,75 @@ def main() -> None:
                 response_format={"type": "json_object"},
             )
 
-            raw = response.choices[0].message.content
+            raw = response.choices[0].message.content or "{}"
             messages.append({"role": "assistant", "content": raw})
 
             action_dict = json.loads(raw)
             action      = ProteinAction(**action_dict)
-
-            # ── [STEP] ────────────────────────────────────────────────────
-            print(
-                f"[STEP] task={task} step={step_num} "
-                f"action={action.action_type}",
-                flush=True,
-            )
+            action_str  = action.action_type
 
             result = env.step(action)
+            reward = result.reward or 0.0
+            done   = result.done
+            error  = getattr(result, "error", None)
             obs    = result.observation
 
-            if result.done:
-                final_reward = result.reward
-                break
+            rewards.append(reward)
+            steps_taken = step
 
-        scores[task] = final_reward
+            log_step(
+                step=step,
+                action=action_str,
+                reward=reward,
+                done=done,
+                error=error,
+            )
 
-        # ── [END] ─────────────────────────────────────────────────────────
-        print(
-            f"[END] task={task} score={final_reward:.3f} "
-            f"steps={step_num} status=done",
-            flush=True,
-        )
+        score   = rewards[-1] if rewards else 0.0
+        success = score >= SUCCESS_THRESHOLD
 
-    # ── Summary table ─────────────────────────────────────────────────────
-    print("", flush=True)
-    print("=" * 45, flush=True)
-    print("ProteinEnv Baseline Inference Results", flush=True)
-    print("=" * 45, flush=True)
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    return score
+
+
+def main() -> None:
+    # ── Guard: required env vars ──────────────────────────────────────────
+    if not HF_TOKEN:
+        print("ERROR: HF_TOKEN environment variable not set.", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    if ProteinEnvClient is None:
+        print("ERROR: client.py not found. The OpenEnv orchestrator must inject it.", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    openai_client = openai.OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    env           = ProteinEnvClient(base_url="http://localhost:8000")
+
+    tasks  = ["easy", "medium", "hard"]
+    scores = {}
+
     for task in tasks:
-        score = scores.get(task, 0.0)
-        emoji = "🟢" if score >= 0.9 else ("🟡" if score >= 0.4 else "🔴")
-        print(f"  {task:<6}  {score:.3f}  {emoji}", flush=True)
-    print("-" * 45, flush=True)
+        try:
+            scores[task] = run_task(openai_client, env, task)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[DEBUG] Task {task} failed: {exc}", flush=True)
+            scores[task] = 0.0
+
+    # ── Human-readable summary table ─────────────────────────────────────
+    print("", flush=True)
+    print("=" * 46, flush=True)
+    print("  ProteinEnv Baseline Inference Results", flush=True)
+    print("=" * 46, flush=True)
+    for task in tasks:
+        s = scores.get(task, 0.0)
+        bar = "🟢" if s >= 0.9 else ("🟡" if s >= 0.4 else "🔴")
+        print(f"  {task:<8}  score={s:.3f}  {bar}", flush=True)
+    print("-" * 46, flush=True)
     mean = sum(scores.values()) / len(scores) if scores else 0.0
-    print(f"  Mean    {mean:.3f}", flush=True)
-    print("=" * 45, flush=True)
+    print(f"  Mean      score={mean:.3f}", flush=True)
+    print("=" * 46, flush=True)
 
 
 if __name__ == "__main__":
