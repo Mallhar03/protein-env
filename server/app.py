@@ -31,8 +31,6 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 import os
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 
 
 class ResetRequest(BaseModel):
@@ -56,13 +54,7 @@ except ImportError:
 # Single shared environment instance — created exactly once after app is ready
 _env = ProteinEnvironment()
 
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-if os.path.exists(static_dir):
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-    @app.get("/")
-    async def read_root():
-        return FileResponse(os.path.join(static_dir, "index.html"))
 
 
 @app.get("/health")
