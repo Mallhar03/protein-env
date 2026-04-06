@@ -17,8 +17,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import Body, FastAPI, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 try:
@@ -189,11 +189,14 @@ async def mcp(request: Request) -> JSONResponse:
 
 
 @app.post("/reset")
-async def reset(req: ResetRequest) -> ProteinObservation:
+async def reset(req: Optional[ResetRequest] = Body(default=None)) -> ProteinObservation:
     """Start a new episode and return the initial observation.
 
+    Accepts an optional JSON body. If the body is missing or null,
+    defaults to task_type='easy', seed=None, episode_id=None.
+
     Args:
-        req: ResetRequest with task_type, optional seed and episode_id.
+        req: Optional ResetRequest. Defaults to easy task if not provided.
 
     Returns:
         ProteinObservation for the first step.
@@ -201,6 +204,8 @@ async def reset(req: ResetRequest) -> ProteinObservation:
     Raises:
         Nothing (errors propagate as 500).
     """
+    if req is None:
+        req = ResetRequest()
     logger.info("POST /reset task_type=%s seed=%s", req.task_type, req.seed)
     return _env.reset(
         task_type=req.task_type,
